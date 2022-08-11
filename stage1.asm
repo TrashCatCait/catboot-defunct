@@ -118,19 +118,28 @@ read_disk:
 	mov si,DAPADDR ;DS:SI == dap address 
 	int 0x13 ;call read intterupt 
 	jc error.disk_read ;print read error
+	clc ;clear carry if it was set
 	
-	clc 
 	add word[DAPADDR+0x04],bp ;add sector size to offset 
 	jc error.read_overflow
 	
-	clc 
+	;clc ;Commented out as carry flag can't really be set here otherwise we would have errored already 
 	add dword[DAPADDR+0x08],1 
 	adc dword[DAPADDR+0x0C],0
-	
+	clc ;clear carry flag if add set it 
+
 	pop cx
 	loop .read_loop ;loop cx number of times 
 	;Far jmp to stage 2 
-	jmp STAGE2_SEG:STAGE2_OFF
+	
+	cli
+	lgdt[gdtr]
+
+	mov eax,cr0 
+	or al,1 
+	mov cr0,eax 
+
+	jmp 0x08:pm_start
 
 	
 
@@ -154,17 +163,49 @@ error:
 	xor bx,bx ;xor out BX 
 	int 0x10 ;Call intterupt 
 
-end:
+hlt_loop:
 	sti 
 	hlt 
-	jmp end
+	jmp hlt_loop
 
+[bits 32] 
+pm_start:
+	cli
+	mov ax,0x10 
+	mov ds,ax
+	mov es,ax
+	mov ss,ax
+
+	jmp STAGE2_ADDR
 
 ;;
 ; Data and padding
 ;;
 disk: db 0x00 
 error_code: db '0'
+
+gdt:
+	.null:
+	dq 0x00 
+	.code32:
+	dw 0xffff ;limit low 
+	dw 0x0000 ;base low 
+	db 0x00 ;base mid 
+	db 10011010b ;access byte 
+	db 11001111b ;flags and limit high 
+	db 0x00 ;base high
+	.data32:
+	dw 0xffff ;limit low 
+	dw 0x0000 ;base low 
+	db 0x00 ;base mid 
+	db 10010010b ;access byte 
+	db 11001111b ;flags and limit high 
+	db 0x00 ;base high
+.end: 
+
+gdtr:
+	dw gdt.end - gdt - 1 
+	dd gdt 
 
 times (430 - ($ - $$)) db 0x00 
 
@@ -179,18 +220,3 @@ dw 0x0000 ;Optional Reserved
 
 times (510 - ($ - $$)) db 0x00 ;Pad to 510 byte 
 dw 0xaa55
-
-stage2_start:
-	mov ah,0x0e
-	mov al,'S'
-	xor bx,bx
-	int 0x10
-	mov ah,0x0e
-	mov al,'2'
-	xor bx,bx
-	int 0x10
-
-	jmp $
-
-
-times (1024 - ($ - $$)) db 0x00 
