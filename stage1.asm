@@ -5,6 +5,10 @@
 %define DAPADDR 0x1000
 %define DISKADDR 0x2000
 
+%define STAGE2_SEG 0x7000 ;load segment right before the EBPB 
+%define STAGE2_OFF 0x0000 
+%define STAGE2_ADDR 0x70000
+
 ;;
 ;	Bits and Org
 ;;
@@ -42,7 +46,6 @@ real_start:
 	cld ;clear the direction flag 
 
 	mov sp,PRGADDR
-
 	;Set the CS register to 0 by far jumping to .set_cs
 	;and jump to low start
 	jmp 0x0000:.set_cs
@@ -75,22 +78,59 @@ real_start:
 ; size which may be hard to do especially as more features are added.
 ;;
 read_disk:
-	mov word[DAPADDR],0x0010 ;Size of packet 
-	mov word[DAPADDR+0x02],0x01 ;Number of blocks to transfer 
-	mov word[DAPADDR+0x04],0x0000 ;offset 
-	mov word[DAPADDR+0x06],0x1000 ;segment
-	mov eax,dword[stage2_lba]
-	mov dword[DAPADDR+0x08],eax ; 
-	mov eax,dword[stage2_lba+4]
-	mov dword[DAPADDR+12],eax 
-	mov ah,0x42
-	mov dl,byte[disk]
-	mov si,DAPADDR
-	int 0x13 
+	mov ah,0x48 ;BIOS ext get drive parms 
+	mov dl,byte[disk] ;dl is the disk number to get parms for 
+	mov si,DISKADDR ;ds:si == Buffer address 
+	mov word[ds:si],0x42 ;Size of buffer 
+	int 0x13 ;call intterupt 
 	
 	jc error.disk_read
-	jmp 0x1000:0000
-jmp end
+	
+	;calculate number of sectors to read 
+	xor dx,dx ;clear out division remainder register 
+	mov cx,word[DISKADDR+0x18] ;bytes of sector into cx 
+	mov bp,cx ;save sector size in bp to use later.
+	mov ax,word[stage2_sz] ;ax = size of stage2 
+	
+	div cx ;Divide DX:AX by CX so AX should equal sectors - 1(if remainder is set)
+	test dx,dx ;check dx is zero or not
+	jz .skip_round 
+
+	inc ax ;if remainder is set increase sectors to read by one
+	
+	.skip_round:
+	mov cx,ax ; how many times to loop reading one sector 
+
+	;set up initial values 
+	mov word[DAPADDR],0x0010 ;Size of packet 
+	mov word[DAPADDR+0x02],0x01 ;Number of blocks to transfer 
+	mov word[DAPADDR+0x04],STAGE2_OFF ;offset 
+	mov word[DAPADDR+0x06],STAGE2_SEG ;segment
+	mov eax,dword[stage2_lba] ;move lower 32-bits of LBA into eax 
+	mov dword[DAPADDR+0x08],eax ;move lower 32-bits into DAP entry 
+	mov eax,dword[stage2_lba+4] ;move higher 32-bits into eax 
+	mov dword[DAPADDR+0x0C],eax ;move higher 32-bits into DAP entry 
+	
+	.read_loop:
+	push cx ;On the off chance some BIOS trashes the CX register we are just going to save it
+	mov ah,0x42 ;move intterupt function number 
+	mov dl,byte[disk] ;dl is the disk number to read from
+	mov si,DAPADDR ;DS:SI == dap address 
+	int 0x13 ;call read intterupt 
+	jc error.disk_read ;print read error
+	
+	clc 
+	add word[DAPADDR+0x04],bp ;add sector size to offset 
+	jc error.read_overflow
+	
+	clc 
+	add dword[DAPADDR+0x08],1 
+	adc dword[DAPADDR+0x0C],0
+	
+	pop cx
+	loop .read_loop ;loop cx number of times 
+	;Far jmp to stage 2 
+	jmp STAGE2_SEG:STAGE2_OFF
 
 	
 
@@ -100,6 +140,8 @@ jmp end
 ;1 - disk ext features not supported 
 ;2 - disk read error
 error:
+	.read_overflow:
+	inc byte[error_code]
 	.disk_read: 
 	inc byte[error_code]
 	.disk_ext_features_no_support:
@@ -113,7 +155,7 @@ error:
 	int 0x10 ;Call intterupt 
 
 end:
-	cli 
+	sti 
 	hlt 
 	jmp end
 
@@ -126,7 +168,7 @@ error_code: db '0'
 
 times (430 - ($ - $$)) db 0x00 
 
-stage2_sz: dw 0x0000 
+stage2_sz: dw 0x0200
 stage2_lba: dq 0x0001
 
 ;We are going to avoid using these bytes on the off
@@ -147,6 +189,8 @@ stage2_start:
 	mov al,'2'
 	xor bx,bx
 	int 0x10
+
+	jmp $
 
 
 times (1024 - ($ - $$)) db 0x00 
