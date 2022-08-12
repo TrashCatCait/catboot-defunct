@@ -76,6 +76,10 @@ real_start:
 ; Plan 3: 
 ; Keep 64KB limit but means stage 2 is very limited as it needs to remain below 64KB in 
 ; size which may be hard to do especially as more features are added.
+;
+; Plan 4:
+; Three stage loader so MBR loads stage 2, then stage 2 loads stage 3 while in protected 
+; mode meaning it doesn't have to deal with the 64KB limit 
 ;;
 read_disk:
 	mov ah,0x48 ;BIOS ext get drive parms 
@@ -148,6 +152,7 @@ read_disk:
 ;0 - disk ext function is invalid 
 ;1 - disk ext features not supported 
 ;2 - disk read error
+;3 - read offset overflowed
 error:
 	.read_overflow:
 	inc byte[error_code]
